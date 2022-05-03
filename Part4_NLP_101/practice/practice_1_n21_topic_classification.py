@@ -28,32 +28,34 @@ PRETRAINED_MODEL_NAME = 'klue/bert-base'
 
 # you can define any type of dataset
 # dataset : return an example for batch construction. 
-class TopicDataset(Dataset):
+
+## 하나의 ex을 어떻게 tensor화 시킬지
+class TopicDataset(Dataset): # torch에서 만든 데이터 플레이스. 
     """Dataset."""
     def __init__(self, data, tokenizer, label_vocab, max_seq_length):
         texts  = [x[0] for x in data]
         labels = [x[1] for x in data]
-        self.inputs = tokenizer(texts, padding='max_length', truncation=True, return_tensors='pt', max_length=max_seq_length)
+        self.inputs = tokenizer(texts, padding='max_length', truncation=True, return_tensors='pt', max_length=max_seq_length) # pt: pytorch tensor
         self.outputs = [ label_vocab.get(x) for x in labels ]
-
+# label의 distribution을 잘 봐야함. train에는 있는데 test에는 없고 이런 문제가 생길 수 있음!!!!
     def __len__(self):
-        return len(self.outputs) 
+        return len(self.outputs) # 현재 데이터셋 길이
 
-    def __getitem__(self, idx): 
+    def __getitem__(self, idx): # iterator 돌리면. 하나씩 얻어오면 인덱스번호줌. 이는 
         item = [
                     # input
                     self.inputs.input_ids[idx],
-                    self.inputs.token_type_ids[idx],
-                    self.inputs.attention_mask[idx], 
+                    self.inputs.token_type_ids[idx], # bert는 문장을 이어 붙여주는게 있음. [cls] a [sep] b : qna같은 문제. a는 0으로, b는 1로
+                    self.inputs.attention_mask[idx], # padding mask (:?더해?)  ## huggingface에 특화된 인터페이스
              
                     # output
                     torch.tensor(self.outputs[idx])
                 ]
         return item
 
-
+## 어떻게 데이터를 가져올거냐
 class KLEU_TopicDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size: int = 32, max_seq_length : int=512):
+    def __init__(self, batch_size: int = 32, max_seq_length : int=512): # minibatch 32개 보고 어텐션. 기울기를 누적 # batchsize를 고정하는순간, seq length를 고정. 총 32개의 문장을 돌리니까, 그들의 각각 길이를 고정시키고 넘어가는건 잘림. 내데이터의 문장의 길이를 보고 선택하면 됨.(truncation) 빈거는 padding. huggingface툴 사용하기 
         super().__init__()
         self.batch_size = batch_size
         self.max_seq_length = max_seq_length
@@ -67,7 +69,7 @@ class KLEU_TopicDataModule(pl.LightningDataModule):
 
         # prepare tokenizer
         # checkout : https://github.com/kiyoungkim1/LMkor
-        from transformers import BertTokenizerFast
+        from transformers import BertTokenizerFast # 여기서 만들어놓은것. padding채우고 이런.. pretrain model을 재활용(파라미터 웨이트 재활용 / vocab 재활용)
         self.tokenizer = BertTokenizerFast.from_pretrained(PRETRAINED_MODEL_NAME)
 
         # prepare label dictionary
@@ -98,7 +100,7 @@ class KLEU_TopicDataModule(pl.LightningDataModule):
         return data 
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True) # NOTE : Shuffle
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True) # NOTE : Shuffle 훈련할때는 셔플로함. 
 
     def val_dataloader(self):
         return DataLoader(self.valid_dataset, batch_size=self.batch_size)
@@ -110,12 +112,12 @@ from torchmetrics import functional as FM
 
 from commons.bert import BERT, BERT_CONFIG
 class TopicClassifier(pl.LightningModule): 
-    def __init__(self, 
+    def __init__(self, # 자동으로 관리해줄게. self로 정의해줌.
                  num_class, 
                  # optiimzer setting
                  learning_rate=1e-3):
         super().__init__()
-        self.save_hyperparameters()  
+        self.save_hyperparameters()  # 실험을돌릴때 몇개의 batch사이즈로 했는지 저장이 안됨. 매실험셋팅마다 저장을 해줘서 그외 하이퍼파리미터 관리.
 
         ## [text encoder] 
         ## prepare pretrained - TRANSFORMER Model
@@ -123,7 +125,7 @@ class TopicClassifier(pl.LightningModule):
         hg_config = BertConfig.from_pretrained(PRETRAINED_MODEL_NAME)
         hg_bert   = BertModel.from_pretrained(PRETRAINED_MODEL_NAME)
     
-        ## ours
+        ## ours 우리가 직접 한거를 넣어. 나의 트랜스포머에 넣어줘.
         my_config    = BERT_CONFIG(hg_config=hg_config)
         self.encoder = BERT(my_config)
         self.encoder.copy_weights_from_huggingface(hg_bert)  ## !! important
@@ -132,11 +134,11 @@ class TopicClassifier(pl.LightningModule):
         ## if your transformer does not have pooler, you can use top-layer's specific output.
         pooled_dim = self.encoder.pooler.dense.weight.shape[-1]
 
-        # [to output]
+        # [to output] 마지막 cls. 768 dimension넣어줘. 
         self.to_output = nn.Linear(pooled_dim, self.hparams.num_class) # D -> a single number
 
         # loss
-        self.criterion = nn.CrossEntropyLoss()  
+        self.criterion = nn.CrossEntropyLoss()  # 거의 이거씀..
 
     def forward(self, input_ids, token_type_ids, attention_mask):
         # ENCODING with Transformer 
@@ -151,11 +153,11 @@ class TopicClassifier(pl.LightningModule):
         return logits
 
     def training_step(self, batch, batch_idx):
-        input_ids, token_type_ids, attention_mask, label = batch 
+        input_ids, token_type_ids, attention_mask, label = batch # 위에서 말했던 데이터. input output 47줄.
         logits = self(input_ids, token_type_ids, attention_mask)
         loss   = self.criterion(logits, label.long()) 
 
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True) # logger: wmb, 넵틴?
 
         # all logs are automatically stored for tensorboard
         return loss
@@ -195,7 +197,7 @@ class TopicClassifier(pl.LightningModule):
         self.log_dict(metrics, on_epoch=True)
         return metrics
 
-    def configure_optimizers(self):
+    def configure_optimizers(self): # 보통 아담씀. 이게 성능에 영향을 미침. 대부분 adam. 어떠한 learning rate로 시작하는지도 중요. 그래서 appendix에 다 적게 되어있음. 
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
         return optimizer
 
@@ -215,7 +217,7 @@ def cli_main():
     # args
     # ------------
     parser = ArgumentParser()
-    parser.add_argument('--batch_size', default=100, type=int)
+    parser.add_argument('--batch_size', default=100, type=int) #ㄷ 데이터 마게 바꾸면됨.
     parser.add_argument('--max_seq_length', default=200, type=int)
 
     parser = pl.Trainer.add_argparse_args(parser)
@@ -228,7 +230,7 @@ def cli_main():
     dm = KLEU_TopicDataModule.from_argparse_args(args)
     dm.prepare_data()
     dm.setup(stage='fit')
-    x = iter(dm.train_dataloader()).next() # <for testing 
+    x = iter(dm.train_dataloader()).next() # <for testing 이걸 안하면...개발속도 느려짐.. modeling하면서 에러날수도.. 디버깅포인트로 검증!! 데이터셋검증!
 
     # ------------
     # model
@@ -243,7 +245,7 @@ def cli_main():
     # ------------
     trainer = pl.Trainer(
                             max_epochs=6, 
-                            callbacks=[EarlyStopping(monitor='val_loss')],
+                            callbacks=[EarlyStopping(monitor='val_loss')], # 5번 더보고도 안떨어지면 stop
                             gpus = 1 # if you have gpu -- set number, otherwise zero
                         )
     trainer.fit(model, datamodule=dm)
