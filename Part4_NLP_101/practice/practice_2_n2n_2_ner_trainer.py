@@ -224,10 +224,11 @@ class NamedEntityRecognizer(pl.LightningModule):
         ## --- handling padding label parts
         num_labels = logits.shape[-1]
 
+        # flatten 해줌. 다 눕혀. 한개의 classification이 n번 일어난것처럼.. 동등하게 관리하고 싶다면..? 
         logits = logits.view(-1, num_labels) # [B*seq_len, logit_dim]
         label  = label.view(-1)              # [B * seq_len] flatten 
 
-        active_mask   = attention_mask.view(-1) == 1
+        active_mask   = attention_mask.view(-1) == 1 
         active_logits = logits[active_mask]
 
         active_labels = label[active_mask]
